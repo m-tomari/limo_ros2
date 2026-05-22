@@ -1,15 +1,13 @@
-
- 
 import os
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription
-from launch.conditions import IfCondition, UnlessCondition
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, SetEnvironmentVariable
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command, LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
- 
- 
+
+
 def generate_launch_description():
  
   # Constants for paths to different files and folders
@@ -18,6 +16,7 @@ def generate_launch_description():
   robot_name_in_model = 'limo_description'
   rviz_config_file_path = 'rviz/urdf.rviz'
   urdf_file_path = 'urdf/limo_four_diff.xacro'
+  # Gazebo Sim (Jazzy) ではワールドファイルに .sdf または .world (SDF形式) を使用します
   world_file_path = 'worlds/A410_tomari.world'
  
   # Pose where we want to spawn the robot
@@ -29,13 +28,12 @@ def generate_launch_description():
   ############ You do not need to change anything below this line #############
  
   # Set the path to different files and folders.  
-  pkg_gazebo_ros = FindPackageShare(package='gazebo_ros').find('gazebo_ros')   
+  pkg_ros_gz_sim = FindPackageShare(package='ros_gz_sim').find('ros_gz_sim')   
   pkg_share = FindPackageShare(package=package_name).find(package_name)
   default_urdf_model_path = os.path.join(pkg_share, urdf_file_path)
   default_rviz_config_path = os.path.join(pkg_share, rviz_config_file_path)
   world_path = os.path.join(pkg_share, world_file_path)
   gazebo_models_path = os.path.join(pkg_share, gazebo_models_path)
-  os.environ["GAZEBO_MODEL_PATH"] = gazebo_models_path
  
   # Launch configuration variables specific to simulation
   use_sim_time = LaunchConfiguration('use_sim_time', default='true')
@@ -79,7 +77,7 @@ def generate_launch_description():
   declare_simulator_cmd = DeclareLaunchArgument(
     name='headless',
     default_value='False',
-    description='Whether to execute gzclient')
+    description='Whether to execute headless (without GUI)')
  
   declare_urdf_model_path_cmd = DeclareLaunchArgument(
     name='urdf_model', 
@@ -114,13 +112,6 @@ def generate_launch_description():
     )
  
   # Publish the joint states of the robot
-  start_joint_state_publisher_cmd = Node(
-    package='joint_state_publisher',
-    executable='joint_state_publisher',
-    name='joint_state_publisher',
-    condition=UnlessCondition(gui),
-    parameters=[{'use_sim_time': use_sim_time}])
-    
   start_joint_state_publisher_gui_node = Node(
     condition=IfCondition(gui),
     package='joint_state_publisher_gui',
@@ -136,32 +127,35 @@ def generate_launch_description():
     output='screen',
     arguments=['-d', rviz_config_file])
  
-  # Start Gazebo server
-  start_gazebo_server_cmd = IncludeLaunchDescription(
-    PythonLaunchDescriptionSource(os.path.join(pkg_gazebo_ros, 'launch', 'gzserver.launch.py')),
+  # Gazebo Sim の起動設定 (以前の gzserver / gzclient は統合され、引数でGUIの有無を制御します)
+  # -r オプションでシミュレーションを起動時に自動スタートさせます
+  gz_args = PythonExpression([
+      "'-r ' + '", world, "' if not ", headless, " else '-r -s ' + '", world, "'"
+  ])
+
+  start_gazebo_cmd = IncludeLaunchDescription(
+    PythonLaunchDescriptionSource(os.path.join(pkg_ros_gz_sim, 'launch', 'gz_sim.launch.py')),
     condition=IfCondition(use_simulator),
-    launch_arguments={'world': world}.items())
+    launch_arguments={'gz_args': gz_args}.items())
  
-  # Start Gazebo client    
-  start_gazebo_client_cmd = IncludeLaunchDescription(
-    PythonLaunchDescriptionSource(os.path.join(pkg_gazebo_ros, 'launch', 'gzclient.launch.py')),
-    condition=IfCondition(PythonExpression([use_simulator, ' and not ', headless])))
- 
-  # Launch the robot
+  # Gazebo Sim空間へのロボットのスポーン
   spawn_entity_cmd = Node(
-    package='gazebo_ros', 
-    executable='spawn_entity.py',
-    arguments=['-entity', robot_name_in_model, 
+    package='ros_gz_sim', 
+    executable='create',
+    arguments=['-name', robot_name_in_model, 
                 '-topic', 'robot_description',
-                    '-x', spawn_x_val,
-                    '-y', spawn_y_val,
-                    '-z', spawn_z_val,
-                    '-Y', spawn_yaw_val],
-                    output='screen')
+                '-x', spawn_x_val,
+                '-y', spawn_y_val,
+                '-z', spawn_z_val,
+                '-Y', spawn_yaw_val],
+    output='screen')
  
   # Create the launch description and populate
   ld = LaunchDescription()
  
+  # 環境変数の設定 (Gazebo Sim用のリソースパスを設定)
+  ld.add_action(SetEnvironmentVariable('GZ_SIM_RESOURCE_PATH', gazebo_models_path))
+
   # Declare the launch options
   ld.add_action(declare_use_sim_time_cmd)
   ld.add_action(declare_use_joint_state_publisher_cmd)
@@ -176,12 +170,10 @@ def generate_launch_description():
   ld.add_action(declare_world_cmd)
  
   # Add any actions
-  ld.add_action(start_gazebo_server_cmd)
-  ld.add_action(start_gazebo_client_cmd)
+  ld.add_action(start_gazebo_cmd)
   ld.add_action(spawn_entity_cmd)
   ld.add_action(start_robot_state_publisher_cmd)
   ld.add_action(start_joint_state_publisher_gui_node)
-  # ld.add_action(start_dummy_sensors)
   ld.add_action(start_rviz_cmd)
  
   return ld
